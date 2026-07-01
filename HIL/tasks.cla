@@ -1,0 +1,149 @@
+#include "driverlib.h"
+#include "board.h"
+#include "shared_vars.h"
+//#include <math.h>
+#include "CLAmath.h"
+
+
+#define KP 41.89f
+#define KI 5.85e4f
+
+#define K1 2.4985e-5f
+#define K2 1.99964f
+
+#define VDC 1/400.0f
+
+
+
+float e_k;
+float e_k2;
+
+float y_k;
+float y_k1;
+float y_k2;
+
+float erro;
+float up;
+float ur;
+float duty;
+float dutyA;
+float dutyB;
+
+#define FGRID       60.0f
+#define TS_CONTROL  (1.0f/20000.0f)
+#define AMP_IREF    12.8565f
+#define AMP_IREF_STEP    AMP_IREF/2.0f
+#define TWO_PI      6.28318530718f
+#define STEP        0.0708334f
+
+float theta;
+float tempo;
+float iref;
+float step_two;
+
+float teste_cla;
+
+float io_cla;
+float vo_cla;
+float d;
+float mA;
+float mB;
+float testeCLA;
+#define PI 3.14159265359f
+
+__interrupt void Cla1Task1()
+{
+
+
+    updateIref60Hz();
+
+    uint16_t io_adc = ADC_readResult(ADC0_RESULT_BASE, ADC0_SOC0_IO);
+    uint16_t vo_adc = ADC_readResult(ADC0_RESULT_BASE, ADC0_SOC1_VO);
+
+
+    io_cla = ((float)io_adc - (float)HALF_DAC_VALUE) * SCALE_I * DIV_HALF_DAC_VALUE;
+    vo_cla = ((float)vo_adc - (float)HALF_DAC_VALUE) * SCALE_V * DIV_HALF_DAC_VALUE;
+    
+    testeCLA = io_cla;
+    teste_cla = iref;
+
+    y_k2 = y_k1;
+    y_k1 = y_k;
+
+    e_k2 = e_k;
+    
+
+    erro = iref - io_cla;
+
+    e_k  = erro;  
+
+    up = KP*erro;
+
+    y_k = K1*(erro - e_k2) + K2*y_k1 - y_k2;
+
+    ur = KI*y_k;
+
+
+    duty = up + ur + vo_cla;
+
+    duty = duty * VDC;
+
+    if(duty > 0.99f)
+    {
+        duty = 0.99f;
+    }
+
+    if(duty < -0.99f)
+    {
+        duty = -0.99f;
+    }
+
+
+    //d = duty;
+
+    dutyA = duty;
+    dutyB = -duty;
+    mA = (dutyA +1) * 0.5f;
+    mB = (dutyB +1) * 0.5f;
+
+    //mA = (d + 1) * 0.5;
+    
+    uint16_t tbp = EPWM_getTimeBasePeriod(EPWM_S1_S2_BASE);
+    uint16_t ccvA = mA * tbp; //d
+    uint16_t ccvB = mB * tbp;
+
+
+    EPWM_setCounterCompareValue(EPWM_S1_S2_BASE, EPWM_COUNTER_COMPARE_A , (uint16_t) ccvA);
+    EPWM_setCounterCompareValue(EPWM_S3_S4_BASE, EPWM_COUNTER_COMPARE_A , (uint16_t) ccvB);
+
+    
+}
+
+void updateIref60Hz(void)
+{
+     
+// Comentar estrutura if e descomentar "iref" para regime permanente /*  */
+   if(theta_grid >= TWO_PI)
+    {
+        theta_grid -= TWO_PI;
+    }
+    if (tempo >= STEP) {
+    
+    iref =  AMP_IREF_STEP  * CLAsin(theta_grid);
+   
+
+    }else {
+
+    iref = AMP_IREF * CLAsin(theta_grid);
+    
+
+    }
+   // iref = AMP_IREF * CLAsin(theta_grid);
+    
+    
+    theta_grid += TWO_PI * FGRID * TS_CONTROL;
+
+    tempo += TS_CONTROL;
+
+}
+ 

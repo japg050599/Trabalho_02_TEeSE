@@ -1,0 +1,35 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "cla_pil_aula_6",
+      "type": "ccs-debug",
+      "request": "launch",
+      "projectInfo": {
+        "name": "cla_pil_aula_6",
+        "resourceId": "/cla_pil_aula_6"
+      },
+      "launchSettings": {
+        "coresToLoadForProjectLaunch": [
+          "C28xx_CPU1"
+        ]
+      }
+    },
+    {
+      "name": "PIL",
+      "type": "ccs-debug",
+      "request": "launch",
+      "projectInfo": {
+        "name": "PIL",
+        "resourceId": "/PIL"
+      },
+      "launchSettings": {
+        "coresToLoadForProjectLaunch": [
+          "C28xx_CPU1"
+        ]
+      }
+    }
+  ]
+}

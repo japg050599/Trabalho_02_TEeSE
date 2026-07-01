@@ -1,0 +1,69 @@
+#include "driverlib.h"
+#include "board.h"
+#include "shared_vars.h"
+#include <math.h>
+
+#define KP 41.89f
+#define KI 5.85e4f
+
+#define K1 2.4985e-5f
+#define K2 1.99964f
+
+#define VDC 1/400.0f
+
+float e_k;
+float e_k2;
+
+float y_k;
+float y_k1;
+float y_k2;
+
+float erro;
+float up;
+float ur;
+float duty;
+
+
+__interrupt void Cla1Task1()
+{
+
+    y_k2 = y_k1;
+    y_k1 = y_k;
+
+    e_k2 = e_k;
+    
+
+    erro = iref - io;
+
+    e_k  = erro;  
+    teste = erro;
+
+    up = KP*erro;
+
+    y_k = K1*(erro - e_k2)
+        + K2*y_k1
+        - y_k2;
+
+    ur = KI*y_k;
+
+
+    duty = up + ur + vo;
+
+    duty = duty * VDC;
+
+    if(duty > 0.99f)
+    {
+        duty = 0.99f;
+    }
+
+    if(duty < -0.99f)
+    {
+        duty = -0.99f;
+    }
+
+    d = duty;
+   // d = vo/400.0f;
+   // d = up/400.0f;
+   // d = ur/400.0f;
+    
+}
