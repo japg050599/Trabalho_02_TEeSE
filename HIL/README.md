@@ -1,85 +1,304 @@
-# Exemplo de Integração CPU-CLA no TMS320F28379D
+# Implementação Hardware-in-the-Loop (HIL) no TMS320F28379D
 
-Este projeto demonstra um exemplo prático de configuração, alocação de memória e troca de dados entre a CPU principal (CPU1) e o Control Law Accelerator (CLA) no microcontrolador C2000 TMS320F28379D. Além da comunicação básica utilizando a abordagem de arquivos do Linker (`.cmd`) e o framework **DriverLib**, o projeto exemplifica a integração e o uso da biblioteca **CLAmath** para execução de funções trigonométricas nativas no coprocessador.
+Este projeto implementa uma estratégia **Hardware-in-the-Loop (HIL)** para um inversor monofásico conectado à rede elétrica utilizando o microcontrolador **TMS320F28379D**.
 
-## Funcionamento do Exemplo
+Nesta implementação, tanto a **planta do conversor** quanto o **controlador proporcional-ressonante (PR)** são executados diretamente no microcontrolador. A divisão das tarefas foi realizada conforme especificado no Trabalho 2:
 
-O fluxo básico de processamento consiste em:
+- **CPU1:** execução da planta discretizada;
+- **CLA:** execução do controlador PR;
+- **ePWM:** geração dos pulsos PWM do inversor.
 
-1. **CPU1** escreve um valor flutuante na variável de entrada (`fVal`) localizada na RAM de mensagem de CPU para CLA (`CpuToCla1MsgRAM`).
-2. **CPU1** força o disparo da **Task 1** do CLA através da função `CLA_forceTasks(myCLA0_BASE, CLA_TASKFLAG_1)`.
-3. O **CLA** processa a `Cla1Task1()`, realizando o cálculo trigonométrico via biblioteca CLAmath (ex: `CLAsin`), executa um loop de atraso e salva o resultado na variável `fResult` dentro da RAM de mensagem oposta (`Cla1ToCpuMsgRAM`).
-4. Ao encerrar a tarefa, a interrupção de fim de tarefa do CLA (`cla1Isr1`) é gerada na CPU1 para ler o resultado de volta.
+Além disso, foi utilizada uma interface interna baseada nos módulos **DAC** e **ADC** para reproduzir o fluxo de sinais existente em um sistema real, onde o controlador recebe apenas medições provenientes de sensores.
 
-## Estrutura de Memória Compartilhada
+---
 
-Para que as variáveis globais sejam acessadas por ambos os núcleos, elas são explicitamente mapeadas em seções específicas de memória de mensagem (Message RAMs) através de pragmas no arquivo `main.c`:
+# Funcionamento da Implementação
+
+O fluxo completo da implementação é apresentado abaixo.
+
+1. O módulo **ePWM** gera os sinais PWM responsáveis pelo acionamento das quatro chaves do inversor.
+
+2. A **CPU1** lê o estado instantâneo dessas quatro chaves através de pinos GPIO.
+
+3. Utilizando esses estados, a CPU1 executa a planta discretizada do inversor, calculando:
+   - corrente do filtro (`iL`);
+   - tensão da rede (`vg`).
+
+4. As duas variáveis são convertidas para a faixa dos conversores D/A através da aplicação de um offset correspondente à metade da escala do DAC.
+
+5. Os valores são enviados para dois canais DAC internos:
+   - DACA → tensão da rede;
+   - DACB → corrente do filtro.
+
+6. As saídas dos DACs são conectadas às entradas do ADC do próprio microcontrolador.
+
+7. A cada interrupção do ADC, a CLA lê as duas grandezas medidas e executa o controlador proporcional-ressonante.
+
+8. O controlador calcula o índice de modulação e atualiza os registradores Compare dos módulos ePWM.
+
+9. Os novos sinais PWM passam a acionar novamente a planta embarcada, fechando completamente a malha de controle dentro do próprio microcontrolador.
+
+Todo esse processo ocorre continuamente durante a execução do sistema.
+
+---
+
+# Arquitetura da Implementação
+
+```
+                 +----------------------+
+                 |       CPU1           |
+                 |----------------------|
+                 | Planta Discretizada  |
+                 | Rede 60 Hz           |
+                 +----------+-----------+
+                            |
+                      io      vo
+                            |
+                      DACA / DACB
+                            |
+                 (Ligação Analógica)
+                            |
+                      ADCINA2 / ADCINA3
+                            |
+                 +----------v-----------+
+                 |         CLA          |
+                 |----------------------|
+                 | Controlador PR       |
+                 | Feed-forward         |
+                 | Referência           |
+                 +----------+-----------+
+                            |
+                      Duty Cycle
+                            |
+                      ePWM1 / ePWM2
+                            |
+                 +----------v-----------+
+                 |      Ponte H         |
+                 +----------+-----------+
+                            |
+                     GPIO (S1...S4)
+                            |
+                            |
+                 +----------v-----------+
+                 |        CPU1          |
+                 +----------------------+
+```
+
+---
+
+# Divisão das Tarefas
+
+## CPU1
+
+A CPU1 foi responsável por:
+
+- execução da planta discretizada;
+- geração da tensão da rede;
+- leitura dos estados das chaves do inversor;
+- cálculo da corrente do filtro;
+- atualização dos DACs;
+- armazenamento das formas de onda;
+- sincronização da execução da CLA.
+
+Toda a dinâmica da planta foi implementada utilizando exatamente a discretização desenvolvida no Trabalho 1.
+
+---
+
+## CLA
+
+Toda a estratégia de controle foi implementada na **Task 1** da CLA.
+
+O controlador executa:
+
+- leitura das variáveis provenientes do ADC;
+- geração da referência senoidal;
+- cálculo do erro;
+- parcela proporcional;
+- parcela ressonante discretizada;
+- ação feed-forward;
+- saturação do índice de modulação;
+- atualização dos módulos ePWM.
+
+Dessa forma, toda a malha de corrente é executada exclusivamente pelo coprocessador.
+
+---
+
+# Interface CPU-CLA
+
+A comunicação entre CPU1 e CLA utiliza as Message RAMs configuradas pelo SysConfig.
+
+Neste projeto apenas a variável
 
 ```c
-#pragma DATA_SECTION(fVal,"CpuToCla1MsgRAM");
-float fVal;
-
-#pragma DATA_SECTION(fResult,"Cla1ToCpuMsgRAM");
-float fResult;
-
+theta_grid
 ```
 
-## Alinhamento: Hardware (memcfg) vs Linker (.cmd)
+é compartilhada entre ambos os núcleos.
 
-A configuração correta do ecossistema do CLA exige consistência absoluta entre o controle de acesso de hardware e o mapa de alocação de software.
-
-### 1. Configuração de Hardware (`main.c` / SysConfig memcfg)
-
-Neste projeto, o bloco de memória **RAMLS0** está configurado para uso **exclusivo da CPU**.
-Apenas o bloco **RAMLS1** foi repassado para o CLA para atuar como memória de dados local. Isso permite que o CLA acesse variáveis locais, tabelas de consulta matemáticas e hospede a pilha do compilador.
-
-### 2. Mapeamento no Linker (`2837xD_RAM_CLA_lnk_cpu1.cmd`)
-
-Para manter a coerência com o hardware e evitar inconsistências na compilação, as seções genéricas de dados do CLA foram consolidadas e direcionadas exclusivamente para a **RAMLS1**:
-
-```linker
-SECTIONS
-{
-    /* CLA específico mapeado em conformidade com o memcfg */
-    Cla1Prog         : > RAMLS4,           PAGE = 0
-    CLADataLS0       : > RAMLS1,           PAGE = 1
-    CLADataLS1       : > RAMLS1,           PAGE = 1
-
-    Cla1ToCpuMsgRAM  : > CLA1_MSGRAMLOW,   PAGE = 1
-    CpuToCla1MsgRAM  : > CLA1_MSGRAMHIGH,  PAGE = 1
-}
-
+```c
+#pragma DATA_SECTION(theta_grid,"CpuToCla1MsgRAM")
+float theta_grid;
 ```
 
-## Integração com a Biblioteca Matemática (CLAmath)
+A CPU1 atualiza continuamente o ângulo da tensão da rede e a CLA utiliza esse valor para gerar a referência senoidal sincronizada da corrente.
 
-O uso de funções trigonométricas no CLA (como `CLAsin` ou `CLAcos`) exige configurações adicionais para garantir que as tabelas de interpolação sejam acessíveis:
+---
 
-1. **Mapeamento das Tabelas (Lookup Tables):** O Linker foi configurado para alocar a seção `CLA1mathTables` (obrigatoriamente grafada com "m" minúsculo e "s" no final) dentro da RAM acessível ao CLA (`RAMLS1`). Se essa seção não estiver devidamente declarada no `.cmd` ou ficar inacessível, as funções matemáticas retornarão `0.0`.
-```linker
-/* Dentro da condicional CLA_C no arquivo .cmd */
-CLA1mathTables   : > RAMLS1,       PAGE = 1
+# Modelo da Planta
+
+A planta implementada corresponde exatamente ao modelo discreto desenvolvido no Trabalho 1.
+
+A dinâmica da corrente é dada por
+
+\[
+i[k]=Ai[k-1]+K(S[k]+S[k-1])-B(v_g[k]+v_g[k-1])
+\]
+
+onde
+
+- \(S\) representa o estado de chaveamento da ponte;
+- \(v_g\) representa a tensão da rede;
+- \(i\) representa a corrente do filtro.
+
+Os coeficientes discretos são calculados a partir dos parâmetros físicos do filtro RL utilizando a discretização de Tustin.
+
+---
+
+# Frequências de Execução
+
+Foram utilizadas duas frequências distintas.
+
+## Planta
+
+A planta foi executada a
 
 ```
+200 kHz
+```
 
-
-2. **Precisão de Ponto Flutuante (32-bits):** A arquitetura do CLA é uma FPU de 32-bits e não suporta o tipo `double` (64-bits) nativamente. Todas as constantes decimais passadas para as funções matemáticas no código (`.cla`) devem ser explicitamente tipadas como `float` utilizando o sufixo `f` (ex: `0.5f * 3.14f`), evitando cálculos errôneos ou acesso a dados lixo na memória.
-
-## Requisito do Compilador CLA C
-
-O gerenciamento da variável local `i` do loop `for` dentro da tarefa do CLA exige o uso da seção `.scratchpad`. Para que o tamanho e os símbolos dessa área sejam resolvidos corretamente, a flag **`CLA_C`** deve estar explicitamente definida nas propriedades do projeto:
-
-`Project Properties -> C2000 Linker -> Advanced Options -> Command File Preprocessing -> --define=CLA_C`
-
-Isso ativa a condicional necessária dentro do arquivo `.cmd`:
-
-```linker
-#ifdef CLA_C
-   CLA_SCRATCHPAD_SIZE = 0x100;
-   .scratchpad      : > RAMLS1,       PAGE = 1
-   .bss_cla         : > RAMLS1,       PAGE = 1
-   .const_cla       : > RAMLS1,       PAGE = 1
-   CLA1mathTables   : > RAMLS1,       PAGE = 1
-#endif
+correspondendo a um passo de simulação de
 
 ```
+5 μs
+```
+
+Essa frequência foi escolhida para fornecer **10 pontos de integração para cada período de controle**, aumentando a fidelidade numérica da simulação embarcada.
+
+Além disso, considerando o clock de 200 MHz do TMS320F28379D, cada passo da planta dispõe de aproximadamente
+
+```
+1000 ciclos de clock
+```
+
+A implementação desenvolvida utiliza aproximadamente
+
+```
+132 ciclos
+```
+
+restando ampla margem para execução em tempo real.
+
+---
+
+## Controlador
+
+O controlador PR foi executado a
+
+```
+20 kHz
+```
+
+utilizando um decimador por software implementado na interrupção do ADC.
+
+Assim, a CLA é executada apenas a cada 10 passos da planta.
+
+---
+
+# Interface DAC/ADC
+
+Para reproduzir o funcionamento de um sistema físico, as variáveis simuladas são convertidas para sinais analógicos internos.
+
+## DAC
+
+Dois canais DAC são utilizados.
+
+| DAC | Variável |
+|------|----------|
+| DACA | tensão da rede |
+| DACB | corrente do filtro |
+
+As variáveis recebem offset igual à metade da escala do DAC.
+
+---
+
+## ADC
+
+Os mesmos sinais são novamente adquiridos pela CLA através do ADC.
+
+| Canal | Variável |
+|--------|----------|
+| ADCINA2 | tensão da rede |
+| ADCINA3 | corrente do filtro |
+
+Dessa forma, a CLA recebe exatamente o mesmo tipo de informação que receberia caso existissem sensores físicos conectados ao conversor.
+
+---
+
+# Geração PWM
+
+A geração PWM foi realizada integralmente pelos módulos ePWM do TMS320F28379D.
+
+Características utilizadas:
+
+- modo Up-Down;
+- frequência de chaveamento de 20 kHz;
+- sinais complementares;
+- inserção de dead-time;
+- atualização direta dos registradores Compare.
+
+A CLA calcula o índice de modulação e converte esse valor para os registradores CMPA dos módulos:
+
+- ePWM1 → S1/S2
+- ePWM2 → S3/S4
+
+---
+
+# Configuração dos Periféricos
+
+Os principais módulos utilizados foram:
+
+| Periférico | Função |
+|------------|---------|
+| CPU1 | planta discretizada |
+| CLA | controlador PR |
+| ADC | aquisição das variáveis simuladas |
+| DAC | exportação da corrente e tensão |
+| ePWM | geração dos pulsos PWM |
+| GPIO | leitura das chaves do inversor |
+| CPU Timer | disparo das conversões ADC |
+| MEMCFG | configuração das Message RAMs |
+
+---
+
+# Buffers de Aquisição
+
+Para facilitar a análise das formas de onda, foram implementados buffers internos para armazenamento das principais variáveis do sistema.
+
+São registrados:
+
+- corrente do filtro;
+- tensão da rede;
+- estado de chaveamento;
+- estados individuais das chaves S1 e S3.
+
+Os buffers permitem visualizar posteriormente o comportamento temporal da implementação HIL.
+
+---
+
+# Considerações
+
+Nesta implementação toda a malha de controle foi executada integralmente no microcontrolador TMS320F28379D, eliminando completamente a necessidade de comunicação com o computador durante a simulação.
+
+A CPU1 foi responsável pela execução da planta discretizada, enquanto a CLA executou exclusivamente o controlador proporcional-ressonante. A utilização dos módulos DAC e ADC permitiu reproduzir o fluxo de sinais presente em um sistema físico, enquanto os módulos ePWM geraram diretamente os pulsos de acionamento do inversor.
+
+Essa arquitetura atende integralmente aos requisitos propostos para a implementação Hardware-in-the-Loop do Trabalho 2, preservando as mesmas frequências de chaveamento e de amostragem utilizadas nas implementações MIL, SIL e PIL.
